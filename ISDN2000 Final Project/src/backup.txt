@@ -1,0 +1,205 @@
+#include "esp32-hal-ledc.h"
+#include <WiFi.h>
+#include <Firebase_ESP_Client.h>
+#include <stdio.h>
+// Provide the token generation process info.
+#include "addons/TokenHelper.h"
+// Provide the RTDB payload printing info and other helper functions.
+#include "addons/RTDBHelper.h"
+
+//Self Wri"ten .hpp"
+#include "credential.hpp"
+#include "init.hpp"
+
+
+//----------------------------------------------------------------
+//init for Firebase 
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config; 
+
+unsigned long Send_Data_Prev_Mil = 0 ;
+bool signupOK = false;   
+uint8_t ID = 1;
+//----------------------------------------------------------------
+void Wifi_Connect(){
+  WiFi.begin(ssid, password);
+  Serial.println("Connecting WiFi...");
+  while (WiFi.status() != WL_CONNECTED){
+    Serial.print(".");
+    delay(300);
+  }
+  Serial.println("Connected to WiFi!");
+  Serial.print("Wi-Fi IP:");
+  Serial.println(WiFi.localIP());
+  Serial.println("------------------------------------");
+}
+
+void FireBase_Init(){
+
+
+  /* Assign the api key (required) */
+  config.api_key = API_Key;
+
+  /* Assign the user sign in credentials */
+  auth.user.email = USER_EMAIL;
+  auth.user.password = USER_PASSWORD;
+
+  /* Assign the RTDB URL (required) */
+  config.database_url = Database_URL;
+
+  Serial.println("Initializing Firebase...");
+  Serial.printf("Firebase Client v%s\n\n", FIREBASE_CLIENT_VERSION);
+
+  
+  Firebase.signUp(&config, &auth, auth.user.email,auth.user.password );
+  /* Sign up */
+  // if (Firebase.signUp(&config, &auth, auth.user.email,auth.user.password ))
+  // {
+  //   Serial.println("ok");
+  //   signupOK = true;
+  // }
+  // else
+  // {
+  //   Serial.printf("%s\n", config.signer.signupError.message.c_str());
+  // }
+  // Or use legacy authenticate method
+  // config.signer.tokens.legacy_token = "<database secret>";
+
+  /* Assign the callback function for the long running token generation task */
+  config.token_status_callback = tokenStatusCallback;  // see addons/TokenHelper.h
+
+  fbdo.setBSSLBufferSize(2048 /* Rx buffer size in bytes from 512 - 16384 */, 2048 /* Tx buffer size in bytes from 512 - 16384 */);
+
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+}
+void init()
+{
+//Setup the Servo PWM Channel
+ledcSetup(ServoPWM, Servo_Freq, SigResolution);
+ledcAttachPin(ServoPin_1, ServoPWM);
+
+// //Setting up MQTT Connection
+//   setup_wifi();
+//   client.setServer(mqttServer, 1883);
+//   client.setCallback(callback);
+//Init Serial. 
+Serial.begin(9600);
+Serial.println("-------Initialing...------");
+//Init Pin
+pinMode(Motor_IN1, OUTPUT);
+pinMode(Motor_IN2, OUTPUT);
+pinMode(LED_1, OUTPUT);
+pinMode(LED_2, OUTPUT);
+pinMode(Thermal_Sensor, INPUT);
+pinMode(trigPin, OUTPUT); 
+pinMode(echoPin, INPUT); 
+pinMode(ServoPin_1, OUTPUT); 
+
+
+
+Wifi_Connect();
+
+FireBase_Init();
+Serial.println("-------Initialized------");
+delay(10);
+}
+
+
+uint8_t distance_sensing()
+{
+  long duration;
+  uint8_t distance;
+
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  // Sets the trigPin on HIGH state for 10 micro seconds
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  // Reads the echoPin, returns the sound wave travel time in microseconds
+  duration = pulseIn(echoPin, HIGH);
+  // Calculating the distance
+  distance = duration * 0.034 / 2;
+  // Debug
+  // Serial.print("Distance: ");
+  // Serial.println(distance);
+  return distance;
+}
+
+
+
+bool HumanDetector(uint8_t distance)
+{
+  if(digitalRead(Thermal_Sensor) == 1 && distance <= 30 )
+    return true;
+  else
+    return false;
+}
+
+//Servo Motor Driver 
+void ServoMotorDeg(uint8_t degree)
+{
+  //deg = 0 -->  1ms 
+  //deg = 90 --> 1.5ms 
+  //deg = 180 --> 2ms 
+  //should be 1-2 ms (5-10% Duty Cycle)
+  int dutycycle = 12.8 + degree*(38.4)/180;
+ledcWrite(ServoPWM,dutycycle);
+Serial.println(dutycycle);
+}
+
+// void SearchingForHuman(){
+
+
+
+// }
+
+void setup() {
+init();
+
+
+}
+
+bool HumanPresent = false;
+int count = 0;
+void loop() {
+// for(int i = 0 ; i < 180 ; i+=10){
+//   ServoMotorDeg(i);
+//   delay(500);
+// }
+// Serial.print("HEllo Word!!!!");
+delay(100);
+// if(Firebase.ready() && Connected && (millis()- Send_Data_Prev_Mil > 1000 || Send_Data_Prev_Mil == 0 )){
+if (Firebase.ready() && (millis() - Send_Data_Prev_Mil > 15000 || Send_Data_Prev_Mil == 0)){
+    Send_Data_Prev_Mil = millis();
+
+    HumanPresent = HumanDetector(distance_sensing());
+
+    Serial.printf("Set bool... %s\n", Firebase.RTDB.setBool(&fbdo, F("/test/bool"), (HumanPresent)) ? "ok" : fbdo.errorReason().c_str());
+    Firebase.RTDB.setInt(&fbdo, "/ESP/ID", 2);
+    Firebase.RTDB.setBool(&fbdo, "/ESp/ID/Satus", (HumanPresent));
+    delay(2000);
+// }
+}
+    // For the usage of FirebaseJson, see examples/FirebaseJson/BasicUsage/Create_Edit_Parse.ino
+    FirebaseJson json;
+
+    if (count == 0)
+    {
+      json.set("value/round/" + String(count), F("cool!"));
+      json.set(F("value/ts/.sv"), F("timestamp"));
+      Serial.printf("Set json... %s\n", Firebase.RTDB.set(&fbdo, F("/test/json"), &json) ? "ok" : fbdo.errorReason().c_str());
+      count = 1;
+    }
+    else
+    {
+      json.add(String(count), F("smart!"));
+      Serial.printf("Update node... %s\n", Firebase.RTDB.updateNode(&fbdo, F("/test/json/value/round"), &json) ? "ok" : fbdo.errorReason().c_str());
+    }
+
+    Serial.println();
+}
